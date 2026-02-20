@@ -22,8 +22,21 @@ A client can then interact with the story by sending HTTP requests to the server
 
 ## api
 
-- `GET /current` — returns the current node (text + available choices)
-- `POST /choose/{option}` — advance the story by selecting a choice
+- `GET /current`: returns the current node (text + available choices + whether the story is over)
+    - Response format:
+    ```json
+    {
+        "display_text": "Narration text to be displayed to the user.",
+        "choices": [
+            {
+                "display_text": "Text to be displayed for this choice.",
+                "id": "The ID of this choice"
+            }
+        ],
+        "game_over": false
+    }
+    ```
+- `POST /choose/{choice_id}`: advance the story by selecting the choice with the given ID
 
 ## story format
 
