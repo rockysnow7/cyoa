@@ -1,0 +1,18 @@
+SET name "my friend"
+SET x 0
+
+= START
+    "Hello, {name}! Left or right?"
+    "Go left, {name}." -> left_path
+    [IF x > 0] "Go right." -> right_path
+
+= left_path
+    "To the left is a tall tree."
+    "Climb the tree." -> end
+    "Go back." -> START [THEN x = 1]
+
+= right_path
+    "To the right is a small cottage."
+
+= end
+    "Game over."
