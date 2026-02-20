@@ -52,7 +52,7 @@ Notes:
 - `= name`: define a scene
 - `"text"`: narration or choice string
     - Every scene must have a narration string
-    - Zero or more choices may then follow, each with a string and a target scene. If no choices are given, the story ends after the narratio.
+    - Zero or more choices may then follow, each with a string and a target scene. If no choices are given, the story ends after the narration.
     - `[IF expr]`: conditionally show a choice if a given expression is true
         - Expressions can use variables, literals, and basic operators (`=` for equality, `!=` for inequality, `>` and `<` for comparisons)
     - `[THEN expr]`: run a side effect when a choice is taken
