@@ -73,17 +73,20 @@ pub enum ChoiceResult {
 
 /// Per-session mutable game state.
 pub struct Session {
-    created_at: Instant,
+    last_active_at: Instant,
     variables: HashMap<String, Value>,
     current_node_id: String,
 }
 
 impl Session {
-    // sessions expire after 24 hours, at which point they should be deleted.
-    pub fn is_expired(&self) -> bool {
-        let hours = self.created_at.elapsed().as_secs() / 60 / 60;
+    pub fn is_expired(&self, session_timeout_hours: f32) -> bool {
+        let hours = self.last_active_at.elapsed().as_secs_f32() / 60.0 / 60.0;
 
-        hours >= 24
+        hours >= session_timeout_hours
+    }
+
+    pub fn update_last_active_at(&mut self) {
+        self.last_active_at = Instant::now();
     }
 }
 
@@ -104,7 +107,7 @@ impl<'a> Engine<'a> {
     /// Create a fresh session starting at the beginning of the story.
     pub fn new_session(&self) -> Session {
         Session {
-            created_at: Instant::now(),
+            last_active_at: Instant::now(),
             variables: self.default_variables.clone(),
             current_node_id: "START".to_string(),
         }

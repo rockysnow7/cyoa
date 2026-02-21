@@ -20,6 +20,7 @@ use uuid::Uuid;
 struct SharedState {
     story: Engine<'static>,
     sessions: RwLock<HashMap<String, Arc<Mutex<Session>>>>,
+    session_timeout_hours: f32,
 }
 
 type AppState = Arc<SharedState>;
@@ -44,6 +45,10 @@ struct Args {
     source: String,
     #[arg(short, long, default_value_t = get_available_port())]
     port: u16,
+    #[arg(long, default_value_t = String::new())]
+    prefix: String,
+    #[arg(long, default_value_t = 24.0)]
+    session_timeout_hours: f32,
 }
 
 #[derive(Serialize)]
@@ -64,13 +69,19 @@ async fn create_session(State(state): State<AppState>) -> Json<CreateSessionResp
     Json(CreateSessionResponse { session_id })
 }
 
-async fn clear_old_sessions(state: &SharedState) {
-    for (session_id, session_arc) in state.sessions.write().await.iter() {
+async fn clear_expired_sessions(state: &SharedState) {
+    let mut sessions = state.sessions.write().await;
+    let mut expired_sessions: Vec<String> = Vec::new();
+    for (session_id, session_arc) in sessions.iter() {
         let session = session_arc.lock().await;
-        if session.is_expired() {
+        if session.is_expired(state.session_timeout_hours) {
             println!("Session {session_id} has expired and will be removed.");
-            state.sessions.write().await.remove(session_id);
+            expired_sessions.push(session_id.clone());
         }
+    }
+
+    for session_id in expired_sessions {
+        sessions.remove(&session_id);
     }
 }
 
@@ -94,7 +105,8 @@ async fn get_current(
     let session_arc = get_session_arc(&state, &session_id)
         .await
         .ok_or_else(session_not_found)?;
-    let session = session_arc.lock().await;
+    let mut session = session_arc.lock().await;
+    session.update_last_active_at();
     Ok(Json(state.story.get_current_node_view(&session)))
 }
 
@@ -136,19 +148,27 @@ async fn main() {
     let state: AppState = Arc::new(SharedState {
         story,
         sessions: RwLock::new(HashMap::new()),
+        session_timeout_hours: args.session_timeout_hours,
     });
 
+    let prefix = args.prefix.clone();
     let app = Router::new()
         .route(
-            "/clear_old_sessions",
+            format!("{prefix}/clear_expired_sessions").as_str(),
             post(|State(state): State<AppState>| async move {
-                clear_old_sessions(&state).await;
+                clear_expired_sessions(&state).await;
                 StatusCode::OK
             }),
         )
-        .route("/session", post(create_session))
-        .route("/session/{session_id}/current", get(get_current))
-        .route("/session/{session_id}/choose/{option}", post(choose_option))
+        .route(format!("{prefix}/session").as_str(), post(create_session))
+        .route(
+            format!("{prefix}/session/{{session_id}}/current").as_str(),
+            get(get_current),
+        )
+        .route(
+            format!("{prefix}/session/{{session_id}}/choose/{{option}}").as_str(),
+            post(choose_option),
+        )
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", args.port);

@@ -7,20 +7,26 @@ A scripting language, runtime, and HTTP server for choose-your-own-adventure sty
 To start the server, run:
 
 ```rust
-cargo run -- --source path/to/story.cyoa [--port 8080]
+cargo run -- --source path/to/story.cyoa [--port 8080] [--prefix /api] [--session_timeout_hours 12]
 ```
 
 Or run the binary directly:
 
 ```bash
-./cyoa --source path/to/story.cyoa [--port 8080]
+cyoa --source path/to/story.cyoa [--port 8080] [--prefix /api] [--session_timeout_hours 12]
 ```
 
 If no port is specified, the server will choose a random available port.
 The port number is written to `port.json`.
 A client can then interact with the story by sending HTTP requests to the server.
 
+If no prefix is specified, the server will listen on the root path (`/`). Otherwise, it will listen on the given prefix (e.g. `/api`), and all endpoints described below will be relative to that prefix.
+
+If no session timeout is specified, sessions will expire 24 hours after their last activity. Sessions do not automatically expire, you must send periodic POST requests to `/clear_expired_sessions` to clear them.
+
 ## api
+
+Run `cyoa --help` to see all available command line options.
 
 The server supports multiple independent sessions. Each client creates its own session and receives a session ID to use in subsequent requests.
 
@@ -46,6 +52,7 @@ The server supports multiple independent sessions. Each client creates its own s
     }
     ```
 - `POST /session/{session_id}/choose/{choice_id}`: advance the story for the given session by selecting the choice with the given ID
+- `POST /clear_expired_sessions`: clear all sessions that have been inactive for longer than the session timeout duration
 
 ## story format
 
