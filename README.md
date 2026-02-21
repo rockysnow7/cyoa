@@ -22,7 +22,16 @@ A client can then interact with the story by sending HTTP requests to the server
 
 ## api
 
-- `GET /current`: returns the current node (text + available choices + whether the story is over)
+The server supports multiple independent sessions. Each client creates its own session and receives a session ID to use in subsequent requests.
+
+- `POST /session`: create a new session, starting at the beginning of the story
+    - Response format:
+    ```json
+    {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+- `GET /session/{session_id}/current`: returns the current node for the given session (text + available choices + whether the story is over)
     - Response format:
     ```json
     {
@@ -36,7 +45,7 @@ A client can then interact with the story by sending HTTP requests to the server
         "game_over": false
     }
     ```
-- `POST /choose/{choice_id}`: advance the story by selecting the choice with the given ID
+- `POST /session/{session_id}/choose/{choice_id}`: advance the story for the given session by selecting the choice with the given ID
 
 ## story format
 

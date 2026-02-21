@@ -4,7 +4,7 @@ use parser::{
     Command, Expression, FormatString, FormatStringPart, Node, ProgramPart, Value, parse_program,
 };
 use serde::Serialize;
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, time::Instant};
 
 #[derive(Debug)]
 pub enum ParseError<'a> {
@@ -71,17 +71,41 @@ pub enum ChoiceResult {
     },
 }
 
-pub struct Engine<'a> {
+/// Per-session mutable game state.
+pub struct Session {
+    created_at: Instant,
     variables: HashMap<String, Value>,
-    all_nodes: HashMap<String, Node<'a>>,
     current_node_id: String,
+}
+
+impl Session {
+    // sessions expire after 24 hours, at which point they should be deleted.
+    pub fn is_expired(&self) -> bool {
+        let hours = self.created_at.elapsed().as_secs() / 60 / 60;
+
+        hours >= 24
+    }
+}
+
+/// Shared, immutable story data. Loaded once at startup and referenced by all sessions.
+pub struct Engine<'a> {
+    default_variables: HashMap<String, Value>,
+    all_nodes: HashMap<String, Node<'a>>,
 }
 
 impl<'a> Engine<'a> {
     pub fn new() -> Self {
         Engine {
-            variables: HashMap::new(),
+            default_variables: HashMap::new(),
             all_nodes: HashMap::new(),
+        }
+    }
+
+    /// Create a fresh session starting at the beginning of the story.
+    pub fn new_session(&self) -> Session {
+        Session {
+            created_at: Instant::now(),
+            variables: self.default_variables.clone(),
             current_node_id: "START".to_string(),
         }
     }
@@ -90,7 +114,7 @@ impl<'a> Engine<'a> {
         let mut bad_names = Vec::new();
         for part in &s.0 {
             if let FormatStringPart::Name(name) = part {
-                if !self.variables.contains_key(name) {
+                if !self.default_variables.contains_key(name) {
                     bad_names.push(name.to_string());
                 }
             }
@@ -103,7 +127,7 @@ impl<'a> Engine<'a> {
         match expr {
             Expression::Value(_) => {}
             Expression::Name(name) => {
-                if !self.variables.contains_key(name) {
+                if !self.default_variables.contains_key(name) {
                     bad_names.push(name.to_string());
                 }
             }
@@ -121,7 +145,7 @@ impl<'a> Engine<'a> {
     fn expression_is_valid(&self, expr: &Expression) -> bool {
         match expr {
             Expression::Value(_) => true,
-            Expression::Name(name) => self.variables.contains_key(name),
+            Expression::Name(name) => self.default_variables.contains_key(name),
             Expression::Equals { left, right } | Expression::NotEquals { left, right } => {
                 self.expression_is_valid(left) && self.expression_is_valid(right)
             }
@@ -129,14 +153,14 @@ impl<'a> Engine<'a> {
                 let left_is_int = if let Expression::Value(Value::Int(_)) = left {
                     true
                 } else if let Expression::Name(name) = left {
-                    matches!(self.variables.get(name), Some(Value::Int(_)))
+                    matches!(self.default_variables.get(name), Some(Value::Int(_)))
                 } else {
                     false
                 };
                 let right_is_int = if let Expression::Value(Value::Int(_)) = right {
                     true
                 } else if let Expression::Name(name) = right {
-                    matches!(self.variables.get(name), Some(Value::Int(_)))
+                    matches!(self.default_variables.get(name), Some(Value::Int(_)))
                 } else {
                     false
                 };
@@ -154,7 +178,7 @@ impl<'a> Engine<'a> {
         let mut bad_names = Vec::new();
         match command {
             Command::Set { name, value } => {
-                if !self.variables.contains_key(*name) {
+                if !self.default_variables.contains_key(*name) {
                     bad_names.push(name.to_string());
                 }
                 if let Value::String(s) = value {
@@ -168,7 +192,7 @@ impl<'a> Engine<'a> {
     fn command_is_valid(&self, command: &Command) -> bool {
         match command {
             Command::Set { name, value } => {
-                self.variables.contains_key(*name)
+                self.default_variables.contains_key(*name)
                     && match value {
                         Value::Int(_) | Value::Bool(_) => true,
                         Value::String(s) => self.bad_names_in_string(s).is_empty(),
@@ -259,7 +283,9 @@ impl<'a> Engine<'a> {
         let mut engine = Engine::new();
         for var_def in variable_defs {
             if let ProgramPart::VariableDefinition { name, value } = var_def {
-                engine.variables.insert(name.to_string(), value.clone());
+                engine
+                    .default_variables
+                    .insert(name.to_string(), value.clone());
             } else {
                 unreachable!()
             };
@@ -284,24 +310,24 @@ impl<'a> Engine<'a> {
         self.all_nodes.insert(id, node);
     }
 
-    fn value_to_string(&self, value: &Value) -> String {
+    fn value_to_string(&self, session: &Session, value: &Value) -> String {
         match value {
             Value::Int(i) => i.to_string(),
             Value::Bool(b) => b.to_string(),
-            Value::String(s) => self.evaluate_string(s),
+            Value::String(s) => self.evaluate_string(session, s),
         }
     }
 
-    fn evaluate_string(&self, input: &FormatString) -> String {
+    fn evaluate_string(&self, session: &Session, input: &FormatString) -> String {
         let mut result = String::new();
         for part in &input.0 {
             match part {
                 FormatStringPart::Literal(s) => result.push_str(s),
                 FormatStringPart::Name(name) => {
-                    let var_value = self
+                    let var_value = session
                         .variables
                         .get(name)
-                        .map(|v| self.value_to_string(v))
+                        .map(|v| self.value_to_string(session, v))
                         .unwrap();
                     result.push_str(var_value.as_str());
                 }
@@ -311,42 +337,42 @@ impl<'a> Engine<'a> {
         result
     }
 
-    fn values_are_equal(&self, left: &Value, right: &Value) -> bool {
+    fn values_are_equal(&self, session: &Session, left: &Value, right: &Value) -> bool {
         match (left, right) {
             (Value::Int(l), Value::Int(r)) => l == r,
             (Value::Bool(l), Value::Bool(r)) => l == r,
             (Value::String(l), Value::String(r)) => {
-                self.evaluate_string(l) == self.evaluate_string(r)
+                self.evaluate_string(session, l) == self.evaluate_string(session, r)
             }
             _ => false,
         }
     }
 
-    fn evaluate_expression(&self, input: &Expression) -> Value {
+    fn evaluate_expression(&self, session: &Session, input: &Expression) -> Value {
         match input {
             Expression::Value(v) => v.clone(),
-            Expression::Name(name) => self.variables.get(name).unwrap().clone(),
+            Expression::Name(name) => session.variables.get(name).unwrap().clone(),
             Expression::Equals { left, right } => {
-                let left_val = self.evaluate_expression(left);
-                let right_val = self.evaluate_expression(right);
-                Value::Bool(self.values_are_equal(&left_val, &right_val))
+                let left_val = self.evaluate_expression(session, left);
+                let right_val = self.evaluate_expression(session, right);
+                Value::Bool(self.values_are_equal(session, &left_val, &right_val))
             }
             Expression::NotEquals { left, right } => {
-                let left_val = self.evaluate_expression(left);
-                let right_val = self.evaluate_expression(right);
-                Value::Bool(!self.values_are_equal(&left_val, &right_val))
+                let left_val = self.evaluate_expression(session, left);
+                let right_val = self.evaluate_expression(session, right);
+                Value::Bool(!self.values_are_equal(session, &left_val, &right_val))
             }
             Expression::GreaterThan { left, right } => {
-                let left_val = self.evaluate_expression(left);
-                let right_val = self.evaluate_expression(right);
+                let left_val = self.evaluate_expression(session, left);
+                let right_val = self.evaluate_expression(session, right);
                 match (left_val, right_val) {
                     (Value::Int(l), Value::Int(r)) => Value::Bool(l > r),
                     _ => panic!("GreaterThan operator can only be applied to integers"),
                 }
             }
             Expression::LessThan { left, right } => {
-                let left_val = self.evaluate_expression(left);
-                let right_val = self.evaluate_expression(right);
+                let left_val = self.evaluate_expression(session, left);
+                let right_val = self.evaluate_expression(session, right);
                 match (left_val, right_val) {
                     (Value::Int(l), Value::Int(r)) => Value::Bool(l < r),
                     _ => panic!("LessThan operator can only be applied to integers"),
@@ -355,35 +381,37 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn get_current_node(&self) -> &Node<'a> {
-        self.all_nodes.get(self.current_node_id.as_str()).unwrap()
+    fn get_current_node<'b>(&'b self, session: &Session) -> &'b Node<'a> {
+        self.all_nodes
+            .get(session.current_node_id.as_str())
+            .unwrap()
     }
 
-    pub fn get_valid_options_ids(&'a self) -> Vec<&'a str> {
-        self.get_current_node()
+    pub fn get_valid_options_ids(&self, session: &Session) -> Vec<&str> {
+        self.get_current_node(session)
             .choices
             .iter()
             .map(|choice| choice.next_node_id.as_str())
             .collect()
     }
 
-    pub fn get_current_node_view(&self) -> CurrentNodeView {
-        let current_node = self.get_current_node();
+    pub fn get_current_node_view(&self, session: &Session) -> CurrentNodeView {
+        let current_node = self.get_current_node(session);
 
-        let display_text = self.evaluate_string(&current_node.display_text);
+        let display_text = self.evaluate_string(session, &current_node.display_text);
         let choices = current_node
             .choices
             .iter()
             .filter_map(|choice| {
                 if let Some(req) = &choice.requirement {
-                    if !self.evaluate_expression(req).is_truthy() {
+                    if !self.evaluate_expression(session, req).is_truthy() {
                         return None;
                     }
                 }
 
                 Some(ChoiceView {
                     id: choice.next_node_id.to_string(),
-                    display_text: self.evaluate_string(&choice.text),
+                    display_text: self.evaluate_string(session, &choice.text),
                 })
             })
             .collect();
@@ -396,36 +424,36 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn do_command(&mut self, command: &Command) {
+    fn do_command(&self, session: &mut Session, command: &Command) {
         match command {
             Command::Set { name, value } => {
-                let var = self.variables.get_mut(*name).unwrap();
+                let var = session.variables.get_mut(*name).unwrap();
                 *var = value.clone();
             }
         }
     }
 
-    pub fn choose_option(&mut self, next_node_id: String) -> ChoiceResult {
-        let valid_options = self.get_valid_options_ids();
+    pub fn choose_option(&self, session: &mut Session, next_node_id: String) -> ChoiceResult {
+        let valid_options = self.get_valid_options_ids(session);
         if !valid_options.contains(&next_node_id.as_str()) {
             return ChoiceResult::InvalidOption {
-                current_node_id: self.current_node_id.to_string(),
+                current_node_id: session.current_node_id.to_string(),
                 chosen_option: next_node_id.to_string(),
             };
         }
 
         let choice = self
-            .get_current_node()
+            .get_current_node(session)
             .choices
             .iter()
             .find(|choice| choice.next_node_id == next_node_id)
             .unwrap()
             .clone();
         if let Some(command) = &choice.command {
-            self.do_command(command);
+            self.do_command(session, command);
         }
 
-        self.current_node_id = next_node_id;
+        session.current_node_id = next_node_id;
 
         ChoiceResult::Success
     }
